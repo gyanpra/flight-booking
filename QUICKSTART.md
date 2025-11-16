@@ -99,7 +99,39 @@ Wait for: "Started FlightNotificationApplication"
 
 ## Test the System
 
-### 1. Sync Flights to Elasticsearch
+### 1. Load Flight Data via Carrier API
+
+**Create a flight:**
+```bash
+curl -X POST http://localhost:8081/api/carrier/flights \
+  -H "Content-Type: application/json" \
+  -d '{
+    "carrier": "INDIGO",
+    "flightNumber": "6E-456",
+    "departureAirport": "BOM",
+    "arrivalAirport": "BLR",
+    "departureTime": "2026-12-15T10:00:00",
+    "arrivalTime": "2026-12-15T11:30:00",
+    "equipment": "A320"
+  }'
+```
+
+Save the `flightId` from response.
+
+**Add inventory:**
+```bash
+curl -X POST http://localhost:8081/api/carrier/inventory \
+  -H "Content-Type: application/json" \
+  -d '{
+    "flightId": "<FLIGHT_ID_FROM_ABOVE>",
+    "fareClass": "Y",
+    "cabinClass": "ECONOMY",
+    "totalSeats": 180,
+    "price": 4500.00
+  }'
+```
+
+**Or sync existing sample data to Elasticsearch:**
 ```bash
 curl -X POST http://localhost:8081/api/flights/sync
 ```
@@ -224,9 +256,9 @@ psql -d flight_booking_db -c "SELECT COUNT(*) FROM bookings;"
 ### Redis
 ```bash
 redis-cli
-127.0.0.1:6379> KEYS *
-127.0.0.1:6379> GET "flightSearch::BLR-DEL-2026-12-15-2"
-127.0.0.1:6379> exit
+KEYS *
+GET "flightSearch::BLR-DEL-2026-12-15-2"
+exit
 ```
 
 ### Elasticsearch
@@ -321,6 +353,28 @@ brew services restart elasticsearch-full
 # Restart Kafka and Zookeeper
 brew services restart zookeeper
 brew services restart kafka
+```
+
+### Jackson Date/Time Serialization Error
+If you see "Java 8 date/time type not supported" error:
+
+```bash
+# Rebuild all services
+cd flight-booking
+mvn clean install -DskipTests
+
+# Restart all services
+```
+
+### Kafka Deserialization Error
+If notification service shows "Can't deserialize data from topic" error:
+
+```bash
+# Delete and recreate the Kafka topic
+./fix-kafka-topic.sh
+
+# Then rebuild and restart all services
+mvn clean install -DskipTests
 ```
 
 ## Stop Services

@@ -1,9 +1,7 @@
 package com.flightbooking.search.service.impl;
 
 import com.flightbooking.common.exception.ResourceNotFoundException;
-import com.flightbooking.search.dto.FlightDetailsResponse;
-import com.flightbooking.search.dto.FlightSearchRequest;
-import com.flightbooking.search.dto.FlightSearchResponse;
+import com.flightbooking.search.dto.*;
 import com.flightbooking.search.mapper.FlightMapper;
 import com.flightbooking.search.model.Flight;
 import com.flightbooking.search.model.FlightDocument;
@@ -95,5 +93,51 @@ public class FlightSearchServiceImpl implements FlightSearchService {
         }
         
         log.info("Completed syncing {} flights to Elasticsearch", flights.size());
+    }
+    
+    @Override
+    @Transactional
+    public FlightCreatedResponse createFlight(CreateFlightRequest request) {
+        log.info("Creating flight: {} {}", request.getCarrier(), request.getFlightNumber());
+        
+        Flight flight = new Flight();
+        flight.setCarrier(request.getCarrier());
+        flight.setFlightNumber(request.getFlightNumber());
+        flight.setDepartureAirport(request.getDepartureAirport());
+        flight.setArrivalAirport(request.getArrivalAirport());
+        flight.setDepartureTime(request.getDepartureTime());
+        flight.setArrivalTime(request.getArrivalTime());
+        flight.setEquipment(request.getEquipment());
+        flight.setIsActive(true);
+        
+        flight = flightRepository.save(flight);
+        
+        return new FlightCreatedResponse(flight.getFlightId(), flight.getFlightNumber(), 
+                                         "Flight created successfully");
+    }
+    
+    @Override
+    @Transactional
+    public void addInventory(AddInventoryRequest request) {
+        log.info("Adding inventory for flight: {}", request.getFlightId());
+        
+        Flight flight = flightRepository.findById(request.getFlightId())
+            .orElseThrow(() -> new ResourceNotFoundException("Flight not found: " + request.getFlightId()));
+        
+        SeatInventory inventory = new SeatInventory();
+        inventory.setFlightId(request.getFlightId());
+        inventory.setFareClass(request.getFareClass());
+        inventory.setCabinClass(request.getCabinClass());
+        inventory.setTotalSeats(request.getTotalSeats());
+        inventory.setAvailableSeats(request.getTotalSeats());
+        inventory.setPrice(request.getPrice());
+        
+        seatInventoryRepository.save(inventory);
+        
+        // Auto-sync to Elasticsearch
+        FlightDocument doc = flightMapper.toDocument(flight, inventory);
+        flightDocumentRepository.save(doc);
+        
+        log.info("Inventory added successfully");
     }
 }

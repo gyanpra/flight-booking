@@ -1,8 +1,6 @@
 package com.flightbooking.search.service;
 
-import com.flightbooking.search.dto.FlightDetailsResponse;
-import com.flightbooking.search.dto.FlightSearchRequest;
-import com.flightbooking.search.dto.FlightSearchResponse;
+import com.flightbooking.search.dto.*;
 
 import java.util.List;
 import java.util.UUID;
@@ -27,4 +25,14 @@ public interface FlightSearchService {
      * Sync flight data from PostgreSQL to Elasticsearch
      */
     void syncFlightsToElasticsearch();
+    
+    /**
+     * Create new flight (Carrier API)
+     */
+    FlightCreatedResponse createFlight(CreateFlightRequest request);
+    
+    /**
+     * Add seat inventory to flight (Carrier API)
+     */
+    void addInventory(AddInventoryRequest request);
 }
