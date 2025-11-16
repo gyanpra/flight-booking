@@ -13,16 +13,25 @@ import com.flightbooking.common.event.BookingEvent;
 import com.flightbooking.common.exception.BusinessException;
 import com.flightbooking.common.exception.ResourceNotFoundException;
 import com.flightbooking.common.util.PNRGenerator;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
+import jakarta.persistence.OptimisticLockException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Service
@@ -34,17 +43,45 @@ public class BookingServiceImpl implements BookingService {
     private final UserRepository userRepository;
     private final BookingMapper bookingMapper;
     private final KafkaTemplate<String, BookingEvent> kafkaTemplate;
+    private final RedissonClient redissonClient;
     
     private static final String BOOKING_EVENTS_TOPIC = "booking-events";
     
     @Override
-    @Transactional
+    @Transactional(isolation = Isolation.REPEATABLE_READ)
+    @Retryable(
+        retryFor = {OptimisticLockException.class},
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 100, multiplier = 2)
+    )
+    @RateLimiter(name = "bookingRateLimiter", fallbackMethod = "createBookingFallback")
+    @CircuitBreaker(name = "bookingCircuitBreaker", fallbackMethod = "createBookingFallback")
     public BookingResponse createBooking(CreateBookingRequest request) {
-        log.info("Creating booking for user: {}", request.getUserId());
+        String lockKey = "booking:user:" + request.getUserId();
+        RLock lock = redissonClient.getLock(lockKey);
         
-        User user = userRepository.findById(request.getUserId())
-            .orElseThrow(() -> new ResourceNotFoundException("User not found: " + request.getUserId()));
-        
+        try {
+            if (lock.tryLock(5, 15, TimeUnit.SECONDS)) {
+                try {
+                    log.info("Creating booking for user: {}", request.getUserId());
+                    
+                    User user = userRepository.findById(request.getUserId())
+                        .orElseThrow(() -> new ResourceNotFoundException("User not found: " + request.getUserId()));
+                    
+                    return createBookingInternal(request, user);
+                } finally {
+                    lock.unlock();
+                }
+            } else {
+                throw new BusinessException("Unable to acquire lock for booking creation");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException("Booking creation interrupted");
+        }
+    }
+    
+    private BookingResponse createBookingInternal(CreateBookingRequest request, User user) {
         Booking booking = new Booking();
         booking.setPnr(PNRGenerator.generate());
         booking.setUserId(request.getUserId());
@@ -73,6 +110,11 @@ public class BookingServiceImpl implements BookingService {
         
         log.info("Booking created successfully: {}", booking.getPnr());
         return bookingMapper.toResponse(booking);
+    }
+    
+    private BookingResponse createBookingFallback(CreateBookingRequest request, Exception e) {
+        log.error("Booking creation failed for user: {}", request.getUserId(), e);
+        throw new BusinessException("Booking service temporarily unavailable. Please try again.");
     }
     
     @Override

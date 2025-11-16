@@ -15,14 +15,22 @@ import com.flightbooking.common.enums.PaymentStatus;
 import com.flightbooking.common.event.BookingEvent;
 import com.flightbooking.common.exception.PaymentException;
 import com.flightbooking.common.exception.ResourceNotFoundException;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import jakarta.persistence.OptimisticLockException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 @Service
 @RequiredArgsConstructor
@@ -34,20 +42,50 @@ public class PaymentServiceImpl implements PaymentService {
     private final UserRepository userRepository;
     private final PaymentMapper paymentMapper;
     private final KafkaTemplate<String, BookingEvent> kafkaTemplate;
+    private final RedissonClient redissonClient;
     
     private static final String BOOKING_EVENTS_TOPIC = "booking-events";
     
     @Override
-    @Transactional
+    @Transactional(isolation = Isolation.SERIALIZABLE)
+    @Retryable(
+        retryFor = {OptimisticLockException.class},
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 100, multiplier = 2)
+    )
+    @CircuitBreaker(name = "paymentCircuitBreaker", fallbackMethod = "processPaymentFallback")
     public PaymentResponse processPayment(PaymentRequest request) {
-        log.info("Processing payment for booking: {}", request.getBookingId());
+        String idempotencyKey = "payment:" + request.getBookingId();
+        RLock lock = redissonClient.getLock(idempotencyKey);
         
-        Booking booking = bookingRepository.findById(request.getBookingId())
-            .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + request.getBookingId()));
-        
-        if (booking.getBookingStatus() == BookingStatus.CONFIRMED) {
-            throw new PaymentException("Booking already confirmed");
+        try {
+            if (lock.tryLock(5, 30, TimeUnit.SECONDS)) {
+                try {
+                    log.info("Processing payment for booking: {}", request.getBookingId());
+                    
+                    Booking booking = bookingRepository.findById(request.getBookingId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Booking not found: " + request.getBookingId()));
+                    
+                    if (booking.getBookingStatus() == BookingStatus.CONFIRMED) {
+                        Payment existingPayment = paymentRepository.findById(booking.getPaymentTransactionId())
+                            .orElseThrow(() -> new PaymentException("Booking already confirmed"));
+                        return paymentMapper.toResponse(existingPayment);
+                    }
+                    
+                    return processPaymentInternal(request, booking);
+                } finally {
+                    lock.unlock();
+                }
+            } else {
+                throw new PaymentException("Unable to acquire lock for payment processing");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PaymentException("Payment processing interrupted");
         }
+    }
+    
+    private PaymentResponse processPaymentInternal(PaymentRequest request, Booking booking) {
         
         Payment payment = new Payment();
         payment.setBookingId(request.getBookingId());
@@ -75,6 +113,11 @@ public class PaymentServiceImpl implements PaymentService {
         
         log.info("Payment processed successfully for booking: {}", booking.getPnr());
         return paymentMapper.toResponse(payment);
+    }
+    
+    private PaymentResponse processPaymentFallback(PaymentRequest request, Exception e) {
+        log.error("Payment processing failed for booking: {}", request.getBookingId(), e);
+        throw new PaymentException("Payment service temporarily unavailable. Please try again.");
     }
     
     @Override

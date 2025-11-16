@@ -49,6 +49,9 @@ class PaymentServiceTest {
     @Mock
     private KafkaTemplate<String, BookingEvent> kafkaTemplate;
     
+    @Mock
+    private org.redisson.api.RedissonClient redissonClient;
+    
     @InjectMocks
     private PaymentServiceImpl paymentService;
     
@@ -80,12 +83,15 @@ class PaymentServiceTest {
     }
     
     @Test
-    void testProcessPayment_Success() {
+    void testProcessPayment_Success() throws InterruptedException {
         PaymentRequest request = new PaymentRequest();
         request.setBookingId(testBooking.getBookingId());
         request.setGateway(PaymentGateway.RAZORPAY);
         request.setPaymentMethod(PaymentMethod.UPI);
         
+        org.redisson.api.RLock mockLock = mock(org.redisson.api.RLock.class);
+        when(redissonClient.getLock(any())).thenReturn(mockLock);
+        when(mockLock.tryLock(anyLong(), anyLong(), any())).thenReturn(true);
         when(bookingRepository.findById(any())).thenReturn(Optional.of(testBooking));
         when(paymentRepository.save(any())).thenReturn(testPayment);
         when(userRepository.findById(any())).thenReturn(Optional.of(testUser));

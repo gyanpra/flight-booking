@@ -44,7 +44,7 @@ class EnumTest {
     
     @Test
     void testHoldStatus() {
-        assertEquals(4, HoldStatus.values().length);
+        assertEquals(5, HoldStatus.values().length);
         assertEquals(HoldStatus.ACTIVE, HoldStatus.valueOf("ACTIVE"));
     }
     

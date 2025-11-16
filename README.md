@@ -19,8 +19,11 @@ flight-booking-platform/
 - **Java 21** with Spring Boot 3.4.0
 - **PostgreSQL** - Primary database
 - **Redis** - Caching layer
+- **Redisson** - Distributed locking
 - **Elasticsearch** - Search engine
 - **Kafka** - Event streaming
+- **Resilience4j** - Circuit breakers & rate limiting
+- **Spring Retry** - Retry mechanism
 - **Lombok** - Boilerplate reduction
 - **JUnit 5 & Mockito** - Testing
 
@@ -38,6 +41,9 @@ flight-booking-platform/
 - `GET /api/flights/search` - Search flights
 - `GET /api/flights/{flightId}` - Get flight details
 - `POST /api/flights/sync` - Sync to Elasticsearch
+- `POST /api/seat-holds` - Hold seats with distributed lock
+- `DELETE /api/seat-holds/{holdId}` - Release seat hold
+- `POST /api/seat-holds/{holdId}/confirm` - Confirm seat hold
 
 **Database:** `flight_search_db`
 
@@ -203,6 +209,10 @@ Coverage: ~75% on core business logic
 - **Event-Driven Architecture** - Kafka for async communication
 - **Cache-Aside Pattern** - Redis caching strategy
 - **Optimistic Locking** - Seat inventory concurrency control
+- **Pessimistic Locking** - Critical section protection
+- **Distributed Lock Pattern** - Cross-instance synchronization
+- **Circuit Breaker Pattern** - Fault tolerance
+- **Retry Pattern** - Transient failure handling
 
 ### Clean Architecture
 
@@ -212,22 +222,93 @@ Controller → Service Interface → Service Implementation → Repository → D
    DTOs      Business Logic         Entities
 ```
 
-## API Examples
+## Concurrency & Locking Features
 
-### Search Flights
+### Implemented Mechanisms
 
+- **Distributed Locking** - Redisson-based locks for critical operations
+- **Optimistic Locking** - JPA @Version for seat inventory
+- **Pessimistic Locking** - Database-level locks with SELECT FOR UPDATE
+- **Retry Logic** - Exponential backoff for transient failures
+- **Circuit Breakers** - Resilience4j for fault tolerance
+- **Rate Limiting** - Per-user and per-service rate limits
+- **Idempotency** - Payment processing with idempotency keys
+- **Transaction Isolation** - REPEATABLE_READ and SERIALIZABLE levels
+- **Async Processing** - Thread pools for parallel operations
+- **Seat Hold Expiry** - Scheduled job to release expired holds
+
+### Configuration
+
+**Transaction Isolation:**
+- Booking Creation: REPEATABLE_READ
+- Payment Processing: SERIALIZABLE
+
+**Retry Settings:**
+- Max Attempts: 3
+- Initial Delay: 100ms
+- Backoff Multiplier: 2x
+
+**Circuit Breaker:**
+- Failure Threshold: 50%
+- Wait Duration: 10-15s
+
+**Rate Limiting:**
+- Booking: 10 req/sec
+- Per User: 10 req/min
+
+## Quickstart Guide
+
+### Complete Booking Flow
+
+**Step 1: Create Flight**
+```bash
+curl -X POST http://localhost:8081/api/flights \
+  -H "Content-Type: application/json" \
+  -d '{
+    "carrier": "AI",
+    "flightNumber": "101",
+    "departureAirport": "BLR",
+    "arrivalAirport": "DEL",
+    "departureTime": "2026-12-15T10:00:00",
+    "arrivalTime": "2026-12-15T12:30:00",
+    "equipment": "A320"
+  }'
+# Save flightId from response
+```
+
+**Step 2: Add Seat Inventory**
+```bash
+curl -X POST http://localhost:8081/api/flights/inventory \
+  -H "Content-Type: application/json" \
+  -d '{
+    "flightId": "<flightId>",
+    "fareClass": "Y",
+    "cabinClass": "ECONOMY",
+    "totalSeats": 150,
+    "price": 5000.00
+  }'
+```
+
+**Step 3: Search Flights**
 ```bash
 curl "http://localhost:8081/api/flights/search?origin=BLR&destination=DEL&departureDate=2026-12-15&passengers=2&cabinClass=ECONOMY"
 ```
 
-### Create Booking
+**Step 4: Hold Seats (with distributed lock)**
+```bash
+curl -X POST "http://localhost:8081/api/seat-holds?flightId=<flightId>&sessionId=session123&durationMinutes=15" \
+  -H "Content-Type: application/json" \
+  -d '["12A", "12B"]'
+# Save holdId from response
+```
 
+**Step 5: Create Booking (with retry & rate limiting)**
 ```bash
 curl -X POST http://localhost:8082/api/bookings \
   -H "Content-Type: application/json" \
   -d '{
-    "userId": "uuid",
-    "itineraryId": "uuid",
+    "userId": "<userId>",
+    "itineraryId": "<flightId>",
     "passengers": [{
       "firstName": "John",
       "lastName": "Doe",
@@ -235,22 +316,66 @@ curl -X POST http://localhost:8082/api/bookings \
       "gender": "M"
     }],
     "seats": [{
-      "flightId": "uuid",
+      "flightId": "<flightId>",
       "seatNo": "12A"
     }]
   }'
+# Save bookingId from response
 ```
 
-### Process Payment
-
+**Step 6: Process Payment (with idempotency & circuit breaker)**
 ```bash
 curl -X POST http://localhost:8082/api/payments \
   -H "Content-Type: application/json" \
   -d '{
-    "bookingId": "uuid",
+    "bookingId": "<bookingId>",
     "gateway": "RAZORPAY",
     "paymentMethod": "UPI"
   }'
+```
+
+**Step 7: Confirm Seat Hold**
+```bash
+curl -X POST http://localhost:8081/api/seat-holds/<holdId>/confirm
+```
+
+**Step 8: Get Booking Details**
+```bash
+curl http://localhost:8082/api/bookings/<bookingId>
+```
+
+### Testing Concurrency
+
+**Test Rate Limiting:**
+```bash
+for i in {1..15}; do
+  curl -X POST http://localhost:8082/api/bookings \
+    -H "Content-Type: application/json" \
+    -d '{"userId":"<userId>","itineraryId":"<flightId>","passengers":[{"firstName":"Test","lastName":"User","age":30,"gender":"M"}],"seats":[{"flightId":"<flightId>","seatNo":"12A"}]}'
+done
+# Should see rate limit errors after 10 requests
+```
+
+**Test Distributed Locking:**
+```bash
+# Run simultaneously in 2 terminals
+curl -X POST "http://localhost:8081/api/seat-holds?flightId=<flightId>&sessionId=s1&durationMinutes=15" \
+  -H "Content-Type: application/json" -d '["12A"]' &
+curl -X POST "http://localhost:8081/api/seat-holds?flightId=<flightId>&sessionId=s2&durationMinutes=15" \
+  -H "Content-Type: application/json" -d '["12A"]' &
+# Only one should succeed
+```
+
+**Test Idempotency:**
+```bash
+# Send same payment request twice
+curl -X POST http://localhost:8082/api/payments \
+  -H "Content-Type: application/json" \
+  -d '{"bookingId":"<bookingId>","gateway":"RAZORPAY","paymentMethod":"UPI"}'
+curl -X POST http://localhost:8082/api/payments \
+  -H "Content-Type: application/json" \
+  -d '{"bookingId":"<bookingId>","gateway":"RAZORPAY","paymentMethod":"UPI"}'
+# Should return existing payment
 ```
 
 ## Error Handling
@@ -288,14 +413,11 @@ Global exception handlers provide consistent error responses:
 ## Future Enhancements
 
 - Add authentication & authorization (Spring Security + JWT)
-- Implement seat hold expiry job
 - Add real payment gateway integration
-- Implement email/SMS service integration
-- Add API rate limiting
-- Implement distributed tracing (Sleuth/Zipkin)
+- Implement real email/SMS service integration
 - Add metrics & monitoring (Actuator/Prometheus)
-- Implement circuit breakers (Resilience4j)
-- Add API documentation (Swagger/OpenAPI)
+- Implement distributed tracing (Sleuth/Zipkin)
+- Implement saga pattern for distributed transactions
 
 ## License
 

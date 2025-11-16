@@ -44,6 +44,9 @@ class BookingServiceTest {
     @Mock
     private KafkaTemplate<String, BookingEvent> kafkaTemplate;
     
+    @Mock
+    private org.redisson.api.RedissonClient redissonClient;
+    
     @InjectMocks
     private BookingServiceImpl bookingService;
     
@@ -76,7 +79,10 @@ class BookingServiceTest {
     }
     
     @Test
-    void testCreateBooking_Success() {
+    void testCreateBooking_Success() throws InterruptedException {
+        org.redisson.api.RLock mockLock = mock(org.redisson.api.RLock.class);
+        when(redissonClient.getLock(any())).thenReturn(mockLock);
+        when(mockLock.tryLock(anyLong(), anyLong(), any())).thenReturn(true);
         when(userRepository.findById(any())).thenReturn(Optional.of(testUser));
         when(bookingRepository.save(any())).thenReturn(testBooking);
         when(bookingMapper.toResponse(any())).thenReturn(new BookingResponse());

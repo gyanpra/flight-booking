@@ -40,3 +40,30 @@ logging:
   level:
     com.flightbooking: DEBUG
     org.springframework.kafka: DEBUG
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      bookingCircuitBreaker:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+      paymentCircuitBreaker:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        waitDurationInOpenState: 15s
+        failureRateThreshold: 50
+  
+  ratelimiter:
+    instances:
+      bookingRateLimiter:
+        limitForPeriod: 10
+        limitRefreshPeriod: 1s
+        timeoutDuration: 5s
